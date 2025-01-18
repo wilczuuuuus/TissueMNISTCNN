@@ -10,51 +10,19 @@ from medmnist import TissueMNIST
 
 
 """
-Model results:
+Added:
+- Added L2 regularization (weight_decay=1e-4) to the Adam optimizer to reduce overfitting
+- Learning Rate Scheduling: Added ReduceLROnPlateau scheduler that reduces the learning rate when validation loss plateaus
+- Early Stopping: Added early stopping mechanism that stops training when validation loss hasn't improved for a specified number of epochs
 
-Using device: mps
-Epoch [1/10]
-Train Loss: 1.3687, Train Acc: 49.34%
-Val Loss: 1.6904, Val Acc: 39.09%
-------------------------------------------------------------
-Epoch [2/10]
-Train Loss: 1.2316, Train Acc: 54.06%
-Val Loss: 1.9344, Val Acc: 37.61%
-------------------------------------------------------------
-Epoch [3/10]
-Train Loss: 1.1708, Train Acc: 56.54%
-Val Loss: 1.3654, Val Acc: 51.54%
-------------------------------------------------------------
-Epoch [4/10]
-Train Loss: 1.1308, Train Acc: 58.39%
-Val Loss: 1.2089, Val Acc: 54.77%
-------------------------------------------------------------
-Epoch [5/10]
-Train Loss: 1.0962, Train Acc: 59.65%
-Val Loss: 1.1358, Val Acc: 56.68%
-------------------------------------------------------------
-Epoch [6/10]
-Train Loss: 1.0647, Train Acc: 60.94%
-Val Loss: 1.8728, Val Acc: 47.20%
-------------------------------------------------------------
-Epoch [7/10]
-Train Loss: 1.0412, Train Acc: 61.89%
-Val Loss: 1.5904, Val Acc: 50.14%
-------------------------------------------------------------
-Epoch [8/10]
-Train Loss: 1.0234, Train Acc: 62.59%
-Val Loss: 1.4085, Val Acc: 43.52%
-------------------------------------------------------------
-Epoch [9/10]
-Train Loss: 1.0067, Train Acc: 63.15%
-Val Loss: 9.0031, Val Acc: 36.07%
-------------------------------------------------------------
+Still model is not stable:
 
-Issues to adress
-- overfitting
-  - adjust learning rate scheduling
-  - increase regularization
-  - introduce early stopping
+TO TRY:
+- reduce learning rate
+- increase batch size ?
+- batch normalization
+- gradient clipping
+- work on initialization
 """
 
 
@@ -160,7 +128,7 @@ def prepare_data(batch_size=32):
     return train_loader, val_loader
 
 # Training function
-def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False):
+def train_model(model, train_loader, val_loader, num_epochs=10, patience=5, use_wandb=False):
     if use_wandb:
         wandb.init(project="tissue-classification", name="tissue_cnn_run")
         # Log model architecture
@@ -175,9 +143,17 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
     model = model.to(device)
     
     # Define loss and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
     
+    criterion = nn.CrossEntropyLoss()
+
+    # Early stopping setup
+    best_val_loss = float('inf')
+    early_stopping_counter = 0
+    best_model_state = None
+
     # Training loop
     for epoch in range(num_epochs):
         # Training phase
@@ -236,6 +212,21 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
         val_loss = val_loss / len(val_loader)
         val_acc = 100. * val_correct / val_total
         
+        # Learning rate scheduling
+        scheduler.step(val_loss)
+        
+        # Early stopping check
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_state = model.state_dict().copy()
+            early_stopping_counter = 0
+        else:
+            early_stopping_counter += 1
+            if early_stopping_counter >= patience:
+                print(f'Early stopping triggered after epoch {epoch+1}')
+                model.load_state_dict(best_model_state)
+                break
+
         # Log metrics to wandb
         if use_wandb:
             wandb.log({
@@ -243,7 +234,8 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
                 "train_loss": train_loss,
                 "train_accuracy": train_acc,
                 "val_loss": val_loss,
-                "val_accuracy": val_acc
+                "val_accuracy": val_acc,
+                "learning_rate": optimizer.param_groups[0]['lr']
             })
         
         # Print epoch results
@@ -255,6 +247,9 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
     if use_wandb:
         wandb.finish()
     
+    # Return best model
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
     return model
 
 
@@ -268,7 +263,7 @@ if __name__ == "__main__":
     
     # Create and train model
     model = TissueCNN()
-    trained_model = train_model(model, train_loader, val_loader, use_wandb=True)
+    trained_model = train_model(model, train_loader, val_loader, use_wandb=False)
     
     # Save the trained model
     torch.save(trained_model.state_dict(), 'tissue_classifier.pth')
