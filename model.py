@@ -9,6 +9,55 @@ from torchvision import transforms
 from medmnist import TissueMNIST
 
 
+"""
+Model results:
+
+Using device: mps
+Epoch [1/10]
+Train Loss: 1.3687, Train Acc: 49.34%
+Val Loss: 1.6904, Val Acc: 39.09%
+------------------------------------------------------------
+Epoch [2/10]
+Train Loss: 1.2316, Train Acc: 54.06%
+Val Loss: 1.9344, Val Acc: 37.61%
+------------------------------------------------------------
+Epoch [3/10]
+Train Loss: 1.1708, Train Acc: 56.54%
+Val Loss: 1.3654, Val Acc: 51.54%
+------------------------------------------------------------
+Epoch [4/10]
+Train Loss: 1.1308, Train Acc: 58.39%
+Val Loss: 1.2089, Val Acc: 54.77%
+------------------------------------------------------------
+Epoch [5/10]
+Train Loss: 1.0962, Train Acc: 59.65%
+Val Loss: 1.1358, Val Acc: 56.68%
+------------------------------------------------------------
+Epoch [6/10]
+Train Loss: 1.0647, Train Acc: 60.94%
+Val Loss: 1.8728, Val Acc: 47.20%
+------------------------------------------------------------
+Epoch [7/10]
+Train Loss: 1.0412, Train Acc: 61.89%
+Val Loss: 1.5904, Val Acc: 50.14%
+------------------------------------------------------------
+Epoch [8/10]
+Train Loss: 1.0234, Train Acc: 62.59%
+Val Loss: 1.4085, Val Acc: 43.52%
+------------------------------------------------------------
+Epoch [9/10]
+Train Loss: 1.0067, Train Acc: 63.15%
+Val Loss: 9.0031, Val Acc: 36.07%
+------------------------------------------------------------
+
+Issues to adress
+- overfitting
+  - adjust learning rate scheduling
+  - increase regularization
+  - introduce early stopping
+"""
+
+
 class TissueCNN(nn.Module):
     """
     CNN Model
