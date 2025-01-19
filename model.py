@@ -10,19 +10,57 @@ from medmnist import TissueMNIST
 
 
 """
-val acc was higher then training 
-it changed after 
-- remove droput layer
-- remove weight decay
-- simplified network significantly
-- higher learning rate
+Tried to augement to the same propotion -> reversed val/train acc so augument more naturally:
+Augmented training class distribution:
+Class 0: 53075 samples (25.95%)
+Class 1: 15628 samples (7.64%)
+Class 2: 17598 samples (8.61%)
+Class 3: 15406 samples (7.53%)
+Class 4: 23578 samples (11.53%)
+Class 5: 15410 samples (7.54%)
+Class 6: 39203 samples (19.17%)
+Class 7: 24608 samples (12.03%)
 
-The higher training accuracy is now more typical because:
-Without dropout, the model can fit the training data more easily
-Without weight decay, the model can adjust its weights more freely
-The higher learning rate allows the model to adapt more quickly to the training data
-The simpler architecture has fewer constraints on learning
-This is actually a more normal behavior for neural networks - they typically perform better on data they've seen (training) than on data they haven't (validation). The previous behavior (higher val acc) was unusual and likely indicated underfitting due to over-regularization.
+Validation class distribution:
+Class 0: 7582 samples (32.07%)
+Class 1: 1117 samples (4.73%)
+Class 2: 838 samples (3.54%)
+Class 3: 2201 samples (9.31%)
+Class 4: 1684 samples (7.12%)
+Class 5: 1101 samples (4.66%)
+Class 6: 5601 samples (23.69%)
+Class 7: 3516 samples (14.87%)
+
+results better but overfitting in epoch 7 some anomaly in epoch2
+
+Using device: mps
+Epoch [1/10]
+Train Loss: 1.2031, Train Acc: 54.20%
+Val Loss: 1.2173, Val Acc: 53.57%
+------------------------------------------------------------
+Epoch [2/10]
+Train Loss: 1.0492, Train Acc: 60.41%
+Val Loss: 2.6792, Val Acc: 28.30%
+------------------------------------------------------------
+Epoch [3/10]
+Train Loss: 0.9861, Train Acc: 62.93%
+Val Loss: 1.1289, Val Acc: 58.03%
+------------------------------------------------------------
+Epoch [4/10]
+Train Loss: 0.9411, Train Acc: 64.69%
+Val Loss: 1.1186, Val Acc: 58.22%
+------------------------------------------------------------
+Epoch [5/10]
+Train Loss: 0.9018, Train Acc: 66.05%
+Val Loss: 1.0311, Val Acc: 62.61%
+------------------------------------------------------------
+Epoch [6/10]
+Train Loss: 0.8710, Train Acc: 67.18%
+Val Loss: 0.9982, Val Acc: 63.58%
+------------------------------------------------------------
+Epoch [7/10]
+Train Loss: 0.8406, Train Acc: 68.33%
+Val Loss: 1.0112, Val Acc: 63.46%
 
 """
 
@@ -79,6 +117,9 @@ class TissueCNN(nn.Module):
         return x
 
 def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False):
+    if use_wandb:
+        wandb.init(project="tissue-mnist", name="tissue_classifier")
+    
     device = torch.device("cuda" if torch.cuda.is_available() else 
                          "mps" if torch.backends.mps.is_available() else 
                          "cpu")
@@ -156,23 +197,94 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
     
     return model
 
+# Define transforms at module level
+base_transform = transforms.Compose([
+    transforms.Resize(64),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5], std=[0.5])
+])
+
+augment_transform = transforms.Compose([
+    transforms.Resize(64),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(15),
+    transforms.RandomAffine(
+        degrees=0,
+        translate=(0.1, 0.1),
+        scale=(0.9, 1.1)
+    ),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5], std=[0.5])
+])
+
+class AugmentedTissueMNIST(TissueMNIST):
+    def __init__(self, split, transform=None, target_transform=None, download=True):
+        super().__init__(split=split, transform=transform, target_transform=target_transform, download=download)
+        
+        # Calculate class distributions
+        labels = [label.item() for label in self.labels]
+        unique, counts = np.unique(labels, return_counts=True)
+        self.class_counts = dict(zip(unique, counts))
+        
+        # Find the median class count instead of max
+        self.target_count = int(np.median(list(self.class_counts.values())))
+        
+        # Calculate augmentation multipliers for each class
+        # Only augment classes below the median
+        self.multipliers = {
+            cls: max(1, min(3, int(np.ceil(self.target_count / count))))
+            for cls, count in self.class_counts.items()
+            if count < self.target_count
+        }
+        
+        # Create augmented dataset
+        self.augmented_indices = []
+        for idx in range(len(self.imgs)):
+            label = self.labels[idx].item()
+            # Only augment if class needs augmentation
+            if label in self.multipliers:
+                mult = self.multipliers[label]
+                # Original image
+                self.augmented_indices.append((idx, False))
+                # Augmented copies (limited)
+                for _ in range(mult - 1):
+                    self.augmented_indices.append((idx, True))
+            else:
+                # Just add original image for well-represented classes
+                self.augmented_indices.append((idx, False))
+    
+    def __len__(self):
+        return len(self.augmented_indices)
+    
+    def __getitem__(self, idx):
+        orig_idx, should_augment = self.augmented_indices[idx]
+        img = self.imgs[orig_idx]
+        label = self.labels[orig_idx]
+        
+        # Convert numpy array to PIL Image
+        img = transforms.ToPILImage()(img)
+        
+        if should_augment:
+            img = augment_transform(img)
+        else:
+            img = base_transform(img)
+            
+        return img, label
+
 def prepare_data(batch_size=32):
-    transform = transforms.Compose([
-        transforms.Resize(64),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5], std=[0.5])
-    ])
+    # Remove transform definitions from here since they're now at module level
     
-    # Create datasets with diagnostics
-    train_dataset = TissueMNIST(split="train", transform=transform, download=True)
-    val_dataset = TissueMNIST(split="val", transform=transform, download=True)
+    # Create datasets with augmentation
+    train_dataset = AugmentedTissueMNIST(split="train", download=True)
+    val_dataset = TissueMNIST(split="val", transform=base_transform, download=True)
     
-    # Print dataset sizes and class distributions
-    print(f"Training set size: {len(train_dataset)}")
+    # Print original and augmented dataset sizes
+    print(f"Original training set size: {len(train_dataset.imgs)}")
+    print(f"Augmented training set size: {len(train_dataset)}")
     print(f"Validation set size: {len(val_dataset)}")
     
-    # Calculate and print class distribution
-    train_labels = [label.item() for _, label in train_dataset]
+    # Calculate and print class distribution after augmentation
+    train_labels = [train_dataset[i][1].item() for i in range(len(train_dataset))]
     val_labels = [label.item() for _, label in val_dataset]
     
     def print_class_distribution(labels, name):
@@ -182,9 +294,10 @@ def prepare_data(batch_size=32):
         for class_idx, count in dist.items():
             print(f"Class {class_idx}: {count} samples ({count/len(labels)*100:.2f}%)")
     
-    print_class_distribution(train_labels, "Training")
+    print_class_distribution(train_labels, "Augmented training")
     print_class_distribution(val_labels, "Validation")
     
+    # Create data loaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -212,7 +325,7 @@ if __name__ == "__main__":
     
     # Create and train model
     model = TissueCNN()
-    trained_model = train_model(model, train_loader, val_loader, use_wandb=False)
+    trained_model = train_model(model, train_loader, val_loader, use_wandb=True)
     
     # Save the trained model
     torch.save(trained_model.state_dict(), 'tissue_classifier.pth')
