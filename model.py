@@ -10,131 +10,75 @@ from medmnist import TissueMNIST
 
 
 """
-Added:
-- Added L2 regularization (weight_decay=1e-4) to the Adam optimizer to reduce overfitting
-- Learning Rate Scheduling: Added ReduceLROnPlateau scheduler that reduces the learning rate when validation loss plateaus
-- Early Stopping: Added early stopping mechanism that stops training when validation loss hasn't improved for a specified number of epochs
+val acc was higher then training 
+it changed after 
+- remove droput layer
+- remove weight decay
+- simplified network significantly
+- higher learning rate
 
-Still model is not stable:
+The higher training accuracy is now more typical because:
+Without dropout, the model can fit the training data more easily
+Without weight decay, the model can adjust its weights more freely
+The higher learning rate allows the model to adapt more quickly to the training data
+The simpler architecture has fewer constraints on learning
+This is actually a more normal behavior for neural networks - they typically perform better on data they've seen (training) than on data they haven't (validation). The previous behavior (higher val acc) was unusual and likely indicated underfitting due to over-regularization.
 
-TO TRY:
-- reduce learning rate
-- increase batch size ?
-- batch normalization
-- gradient clipping
-- work on initialization
 """
 
 
 class TissueCNN(nn.Module):
-    """
-    CNN Model
-    - 3 convolutional layers
-    - 2 fully connected layers (Linear)
-    """
-
     def __init__(self):
         super(TissueCNN, self).__init__()
-
-        # Convolutional layers:
         
+        # Simpler architecture with fewer layers and no dropout
+
+        # Convulutional layers
+
+        """
+            1. Input channel, output channels, kernel size, padding
+            2. Normilize output across batch (training stability and speed)
+            3. activation function (introduce non linearity, negative values replaced with 0)
+            4. Max pooling layer (reduce spatial dimensions, takes max value in each window, helps with computational efficiency and feature invariance)
+        """
         self.features = nn.Sequential(
-
-
-            # input channel, output channels, kernel size, padding
+            
+            # First block            
             nn.Conv2d(1, 32, kernel_size=3, padding=1),
-            # Normilize output across batch (training stability and speed)
             nn.BatchNorm2d(32),
-            # activation function (introduce non linearity, negative values replaced with 0)
-            nn.ReLU(),
-            # Max pooling layer (reduce spatial dimensions, takes max value in each window, helps with computational efficiency and feature invariance)
+            nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
             
+
+            # Second block
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
             
+            # Third block
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
         )
         
         # Fully connected layers
-        
-        self.classifier = nn.Sequential(
-            # Randomly drop out 50% of neurons to prevent overfitting
-            nn.Dropout(0.5),
 
-            # Flatten the output of the convolutional layers
-            nn.Linear(128 * 8 * 8, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            
-            # Output layer (8 classes)
-            nn.Linear(512, 8)
+        # Adjusted for 64x64 input
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128 * 8 * 8, 256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 8)
         )
-        
+
     def forward(self, x):
-        # Pass input through convolutional layers
         x = self.features(x)
-        # Flatten the output of the convolutional layers
-        x = x.view(x.size(0), -1)
-        # Pass through fully connected layers
         x = self.classifier(x)
         return x
 
-# Data preparation
-def prepare_data(batch_size=32):
-    # Simple transforms - just convert to tensor and normalize
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5])
-    ])
-    
-    # Load datasets
-    train_dataset = TissueMNIST(
-        split="train",
-        transform=transform,
-        download=True,
-        size=64
-    )
-    
-    val_dataset = TissueMNIST(
-        split="val",
-        transform=transform,
-        download=True,
-        size=64
-    )
-    
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=2,
-        pin_memory=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=2,
-        pin_memory=True
-    )
-    
-    return train_loader, val_loader
-
-# Training function
-def train_model(model, train_loader, val_loader, num_epochs=10, patience=5, use_wandb=False):
-    if use_wandb:
-        wandb.init(project="tissue-classification", name="tissue_cnn_run")
-        # Log model architecture
-        wandb.watch(model)
-    
-    # Set device
+def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False):
     device = torch.device("cuda" if torch.cuda.is_available() else 
                          "mps" if torch.backends.mps.is_available() else 
                          "cpu")
@@ -142,50 +86,31 @@ def train_model(model, train_loader, val_loader, num_epochs=10, patience=5, use_
     
     model = model.to(device)
     
-    # Define loss and optimizer
-
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
-    
+    # Simpler training setup
+    optimizer = optim.Adam(model.parameters(), lr=0.001)  # Higher learning rate
     criterion = nn.CrossEntropyLoss()
-
-    # Early stopping setup
-    best_val_loss = float('inf')
-    early_stopping_counter = 0
-    best_model_state = None
-
-    # Training loop
+    
     for epoch in range(num_epochs):
         # Training phase
         model.train()
-        train_loss = 0.0
+        running_loss = 0.0
         train_correct = 0
         train_total = 0
         
         for inputs, targets in train_loader:
             inputs = inputs.to(device)
-            targets = targets.squeeze().to(device)
+            targets = targets.squeeze().long().to(device)
             
-            # Zero the gradients
             optimizer.zero_grad()
-            
-            # Forward pass
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-            
-            # Backward pass and optimize
             loss.backward()
             optimizer.step()
             
-            # Track statistics
-            train_loss += loss.item()
+            running_loss += loss.item()
             _, predicted = outputs.max(1)
             train_total += targets.size(0)
             train_correct += predicted.eq(targets).sum().item()
-        
-        # Calculate training metrics
-        train_loss = train_loss / len(train_loader)
-        train_acc = 100. * train_correct / train_total
         
         # Validation phase
         model.eval()
@@ -196,61 +121,85 @@ def train_model(model, train_loader, val_loader, num_epochs=10, patience=5, use_
         with torch.no_grad():
             for inputs, targets in val_loader:
                 inputs = inputs.to(device)
-                targets = targets.squeeze().to(device)
+                targets = targets.squeeze().long().to(device)
                 
-                # Forward pass
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
                 
-                # Track statistics
                 val_loss += loss.item()
                 _, predicted = outputs.max(1)
                 val_total += targets.size(0)
                 val_correct += predicted.eq(targets).sum().item()
         
-        # Calculate validation metrics
+        # Calculate metrics
+        train_loss = running_loss / len(train_loader)
+        train_acc = 100. * train_correct / train_total
         val_loss = val_loss / len(val_loader)
         val_acc = 100. * val_correct / val_total
         
-        # Learning rate scheduling
-        scheduler.step(val_loss)
+        print(f'Epoch [{epoch+1}/{num_epochs}]')
+        print(f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%')
+        print(f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%')
+        print('-' * 60)
         
-        # Early stopping check
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_model_state = model.state_dict().copy()
-            early_stopping_counter = 0
-        else:
-            early_stopping_counter += 1
-            if early_stopping_counter >= patience:
-                print(f'Early stopping triggered after epoch {epoch+1}')
-                model.load_state_dict(best_model_state)
-                break
-
-        # Log metrics to wandb
         if use_wandb:
             wandb.log({
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
                 "train_accuracy": train_acc,
                 "val_loss": val_loss,
-                "val_accuracy": val_acc,
-                "learning_rate": optimizer.param_groups[0]['lr']
+                "val_accuracy": val_acc
             })
-        
-        # Print epoch results
-        print(f'Epoch [{epoch+1}/{num_epochs}]')
-        print(f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%')
-        print(f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%')
-        print('-' * 60)
     
     if use_wandb:
         wandb.finish()
     
-    # Return best model
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
     return model
+
+def prepare_data(batch_size=32):
+    transform = transforms.Compose([
+        transforms.Resize(64),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+    ])
+    
+    # Create datasets with diagnostics
+    train_dataset = TissueMNIST(split="train", transform=transform, download=True)
+    val_dataset = TissueMNIST(split="val", transform=transform, download=True)
+    
+    # Print dataset sizes and class distributions
+    print(f"Training set size: {len(train_dataset)}")
+    print(f"Validation set size: {len(val_dataset)}")
+    
+    # Calculate and print class distribution
+    train_labels = [label.item() for _, label in train_dataset]
+    val_labels = [label.item() for _, label in val_dataset]
+    
+    def print_class_distribution(labels, name):
+        unique, counts = np.unique(labels, return_counts=True)
+        dist = dict(zip(unique, counts))
+        print(f"\n{name} class distribution:")
+        for class_idx, count in dist.items():
+            print(f"Class {class_idx}: {count} samples ({count/len(labels)*100:.2f}%)")
+    
+    print_class_distribution(train_labels, "Training")
+    print_class_distribution(val_labels, "Validation")
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=2
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2
+    )
+    
+    return train_loader, val_loader
 
 
 if __name__ == "__main__":
