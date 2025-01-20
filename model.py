@@ -10,58 +10,9 @@ from medmnist import TissueMNIST
 
 
 """
-Tried to augement to the same propotion -> reversed val/train acc so augument more naturally:
-Augmented training class distribution:
-Class 0: 53075 samples (25.95%)
-Class 1: 15628 samples (7.64%)
-Class 2: 17598 samples (8.61%)
-Class 3: 15406 samples (7.53%)
-Class 4: 23578 samples (11.53%)
-Class 5: 15410 samples (7.54%)
-Class 6: 39203 samples (19.17%)
-Class 7: 24608 samples (12.03%)
-
-Validation class distribution:
-Class 0: 7582 samples (32.07%)
-Class 1: 1117 samples (4.73%)
-Class 2: 838 samples (3.54%)
-Class 3: 2201 samples (9.31%)
-Class 4: 1684 samples (7.12%)
-Class 5: 1101 samples (4.66%)
-Class 6: 5601 samples (23.69%)
-Class 7: 3516 samples (14.87%)
-
-results better but overfitting in epoch 7 some anomaly in epoch2
-
-Using device: mps
-Epoch [1/10]
-Train Loss: 1.2031, Train Acc: 54.20%
-Val Loss: 1.2173, Val Acc: 53.57%
-------------------------------------------------------------
-Epoch [2/10]
-Train Loss: 1.0492, Train Acc: 60.41%
-Val Loss: 2.6792, Val Acc: 28.30%
-------------------------------------------------------------
-Epoch [3/10]
-Train Loss: 0.9861, Train Acc: 62.93%
-Val Loss: 1.1289, Val Acc: 58.03%
-------------------------------------------------------------
-Epoch [4/10]
-Train Loss: 0.9411, Train Acc: 64.69%
-Val Loss: 1.1186, Val Acc: 58.22%
-------------------------------------------------------------
-Epoch [5/10]
-Train Loss: 0.9018, Train Acc: 66.05%
-Val Loss: 1.0311, Val Acc: 62.61%
-------------------------------------------------------------
-Epoch [6/10]
-Train Loss: 0.8710, Train Acc: 67.18%
-Val Loss: 0.9982, Val Acc: 63.58%
-------------------------------------------------------------
-Epoch [7/10]
-Train Loss: 0.8406, Train Acc: 68.33%
-Val Loss: 1.0112, Val Acc: 63.46%
-
+Training more stable
+No sudden drop after 3 epoch
+epoch 7 close to 61,49% val acc
 """
 
 
@@ -69,46 +20,45 @@ class TissueCNN(nn.Module):
     def __init__(self):
         super(TissueCNN, self).__init__()
         
-        # Simpler architecture with fewer layers and no dropout
-
-        # Convulutional layers
-
-        """
-            1. Input channel, output channels, kernel size, padding
-            2. Normilize output across batch (training stability and speed)
-            3. activation function (introduce non linearity, negative values replaced with 0)
-            4. Max pooling layer (reduce spatial dimensions, takes max value in each window, helps with computational efficiency and feature invariance)
-        """
+        # Consistent dropout rate as mentioned in paper
+        self.dropout = nn.Dropout(0.2)  # Lower dropout for 2D
+        
         self.features = nn.Sequential(
-            
-            # First block            
-            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            # First block - maintain spatial information early
+            nn.Conv2d(1, 32, kernel_size=3, padding=1, bias=False),  # Remove bias before BatchNorm
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
+            nn.LeakyReLU(inplace=True, negative_slope=0.01),
             
-
             # Second block
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
+            nn.LeakyReLU(inplace=True, negative_slope=0.01),
+            self.dropout,
+            nn.MaxPool2d(2),  # Delayed pooling
             
             # Third block
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True, negative_slope=0.01),
+            self.dropout,
+            nn.MaxPool2d(2),
+            
+            # Fourth block
+            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(inplace=True, negative_slope=0.01),
+            self.dropout,
             nn.MaxPool2d(2),
         )
         
-        # Fully connected layers
-
-        # Adjusted for 64x64 input
+        # Classifier maintaining more connections
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128 * 8 * 8, 256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, 8)
+            nn.Linear(256 * 8 * 8, 512, bias=False),  # Adjusted for delayed pooling
+            nn.BatchNorm1d(512),  # Add BN to dense layers
+            nn.LeakyReLU(inplace=True, negative_slope=0.01),
+            self.dropout,
+            nn.Linear(512, 8)  # Direct mapping to output
         )
 
     def forward(self, x):
@@ -129,7 +79,23 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
     
     # Simpler training setup
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # Higher learning rate
-    criterion = nn.CrossEntropyLoss()
+    
+    # Add learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min',
+        factor=0.5,
+        patience=2,
+        verbose=True
+    )
+    
+    # Add label smoothing to criterion
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    
+    best_val_loss = float('inf')
+    best_model = None
+    patience = 5
+    patience_counter = 0
     
     for epoch in range(num_epochs):
         # Training phase
@@ -191,11 +157,26 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
                 "val_loss": val_loss,
                 "val_accuracy": val_acc
             })
+        
+        # Update learning rate
+        scheduler.step(val_loss)
+        
+        # Check for early stopping
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model = model.state_dict()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+        
+        if patience_counter >= patience:
+            print("Early stopping triggered")
+            break
     
     if use_wandb:
         wandb.finish()
     
-    return model
+    return best_model
 
 # Define transforms at module level
 base_transform = transforms.Compose([
@@ -297,6 +278,9 @@ def prepare_data(batch_size=32):
     print_class_distribution(train_labels, "Augmented training")
     print_class_distribution(val_labels, "Validation")
     
+    # Create test dataset
+    test_dataset = TissueMNIST(split="test", transform=base_transform, download=True)
+    
     # Create data loaders
     train_loader = DataLoader(
         train_dataset,
@@ -312,8 +296,46 @@ def prepare_data(batch_size=32):
         num_workers=2
     )
     
-    return train_loader, val_loader
+    # Create test data loader
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2
+    )
+    
+    return train_loader, val_loader, test_loader
 
+def evaluate_model(model, test_loader):
+    device = torch.device("cuda" if torch.cuda.is_available() else 
+                         "mps" if torch.backends.mps.is_available() else 
+                         "cpu")
+    model = model.to(device)
+    model.eval()
+    
+    test_loss = 0.0
+    test_correct = 0
+    test_total = 0
+    criterion = nn.CrossEntropyLoss()
+    
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs = inputs.to(device)
+            targets = targets.squeeze().long().to(device)
+            
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            
+            test_loss += loss.item()
+            _, predicted = outputs.max(1)
+            test_total += targets.size(0)
+            test_correct += predicted.eq(targets).sum().item()
+    
+    test_loss /= len(test_loader)
+    test_acc = 100. * test_correct / test_total
+    
+    print(f'Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}%')
+    print('-' * 60)
 
 if __name__ == "__main__":
     # Set random seed for reproducibility
@@ -321,11 +343,14 @@ if __name__ == "__main__":
     np.random.seed(42)
     
     # Prepare data
-    train_loader, val_loader = prepare_data(batch_size=32)
+    train_loader, val_loader, test_loader = prepare_data(batch_size=32)
     
     # Create and train model
     model = TissueCNN()
-    trained_model = train_model(model, train_loader, val_loader, use_wandb=True)
+    trained_model = train_model(model, train_loader, val_loader, use_wandb=False)
     
     # Save the trained model
-    torch.save(trained_model.state_dict(), 'tissue_classifier.pth')
+    torch.save(trained_model, 'tissue_classifier.pth')
+    
+    # Evaluate the model on the test dataset
+    evaluate_model(model, test_loader)
