@@ -66,6 +66,19 @@ class TissueCNN(nn.Module):
         x = self.classifier(x)
         return x
 
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.ce = nn.CrossEntropyLoss(reduction='none')
+
+    def forward(self, inputs, targets):
+        ce_loss = self.ce(inputs, targets)
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * ce_loss
+        return focal_loss.mean()
+
 def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False):
     if use_wandb:
         wandb.init(project="tissue-mnist", name="tissue_classifier")
@@ -80,17 +93,15 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
     # Simpler training setup
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # Higher learning rate
     
-    # Add learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        mode='min',
-        factor=0.5,
-        patience=2,
-        verbose=True
+    # Replace the existing scheduler with cosine annealing
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=num_epochs,
+        eta_min=1e-6
     )
     
     # Add label smoothing to criterion
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    criterion = FocalLoss(gamma=2)
     
     best_val_loss = float('inf')
     best_model = None
@@ -159,7 +170,7 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
             })
         
         # Update learning rate
-        scheduler.step(val_loss)
+        scheduler.step()
         
         # Check for early stopping
         if val_loss < best_val_loss:
