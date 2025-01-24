@@ -10,9 +10,8 @@ from medmnist import TissueMNIST
 
 
 """
-Training more stable
-No sudden drop after 3 epoch
-epoch 7 close to 61,49% val acc
+Let's try a completely different approach focusing on the model's learning dynamics:
+Focal Loss instead of CrossEntropyLoss to handle class imbalance better
 """
 
 
@@ -79,7 +78,7 @@ class FocalLoss(nn.Module):
         focal_loss = self.alpha * (1-pt)**self.gamma * ce_loss
         return focal_loss.mean()
 
-def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False):
+def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False, patience=1):
     if use_wandb:
         wandb.init(project="tissue-mnist", name="tissue_classifier")
     
@@ -104,9 +103,9 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
     criterion = FocalLoss(gamma=2)
     
     best_val_loss = float('inf')
-    best_model = None
-    patience = 5
+    patience = patience
     patience_counter = 0
+    best_model_state = None  # Add this line to store the best model state
     
     for epoch in range(num_epochs):
         # Training phase
@@ -172,22 +171,26 @@ def train_model(model, train_loader, val_loader, num_epochs=10, use_wandb=False)
         # Update learning rate
         scheduler.step()
         
-        # Check for early stopping
+        # Check for early stopping and save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model = model.state_dict()
+            best_model_state = model.state_dict()  # Save the model state
             patience_counter = 0
+            print(f'Validation loss decreased to {val_loss:.4f}. Saving model...')
         else:
             patience_counter += 1
-        
-        if patience_counter >= patience:
-            print("Early stopping triggered")
-            break
+            print(f'EarlyStopping counter: {patience_counter} out of {patience}')
+            
+            if patience_counter >= patience:
+                print('Early stopping triggered')
+                break
     
     if use_wandb:
         wandb.finish()
     
-    return best_model
+    # Load the best model state before returning
+    model.load_state_dict(best_model_state)
+    return model  # Return the model with best weights loaded
 
 # Define transforms at module level
 base_transform = transforms.Compose([
@@ -327,7 +330,7 @@ def evaluate_model(model, test_loader):
     test_loss = 0.0
     test_correct = 0
     test_total = 0
-    criterion = nn.CrossEntropyLoss()
+    criterion = FocalLoss(gamma=2)
     
     with torch.no_grad():
         for inputs, targets in test_loader:
@@ -360,8 +363,8 @@ if __name__ == "__main__":
     model = TissueCNN()
     trained_model = train_model(model, train_loader, val_loader, use_wandb=False)
     
-    # Save the trained model
-    torch.save(trained_model, 'tissue_classifier.pth')
+    # Save the trained model's state dict
+    torch.save(trained_model.state_dict(), 'tissue_classifier.pth')
     
-    # Evaluate the model on the test dataset
-    evaluate_model(model, test_loader)
+    # Evaluate model (no need to load state dict again since trained_model already has the best weights)
+    evaluate_model(trained_model, test_loader)
