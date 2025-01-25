@@ -208,6 +208,3 @@ if __name__ == "__main__":
     
     # Save the trained model's state dict
     torch.save(trained_model.state_dict(), 'pretrained_tissue_classifier.pth')
-    
-    # Evaluate model
-    evaluate_model(trained_model, test_loader)
