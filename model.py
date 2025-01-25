@@ -7,6 +7,9 @@ import wandb
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from medmnist import TissueMNIST
+import matplotlib.pyplot as plt
+from captum.attr import IntegratedGradients, GuidedGradCam, Saliency
+import torchvision.transforms.functional as F
 
 
 """
@@ -19,7 +22,7 @@ class TissueCNN(nn.Module):
     def __init__(self):
         super(TissueCNN, self).__init__()
         
-        # Consistent dropout rate as mentioned in paper
+        # Consistent dropout rate
         self.dropout = nn.Dropout(0.2)  # Lower dropout for 2D
         
         self.features = nn.Sequential(
@@ -64,6 +67,16 @@ class TissueCNN(nn.Module):
         x = self.features(x)
         x = self.classifier(x)
         return x
+
+    def get_activation(self, name):
+        """Helper method to get intermediate activations"""
+        def hook(model, input, output):
+            self.activation[name] = output.detach()
+        return hook
+
+    def get_last_conv_layer(self):
+        """Helper method to get the last convolutional layer"""
+        return self.features[-6]  # Returns the last Conv2d layer before the final MaxPool2d
 
 class FocalLoss(nn.Module):
     def __init__(self, alpha=1, gamma=2):
@@ -320,6 +333,108 @@ def prepare_data(batch_size=32):
     
     return train_loader, val_loader, test_loader
 
+def visualize_explanation(image, attributions, method_names):
+    """Helper function to visualize multiple attribution methods"""
+    plt.figure(figsize=(15, 3))
+    
+    # Original image
+    plt.subplot(1, 4, 1)
+    plt.title('Original Image')
+    plt.imshow(image.squeeze().cpu().numpy(), cmap='gray')
+    plt.axis('off')
+    
+    # Visualize each attribution method
+    for idx, (attribution, method_name) in enumerate(zip(attributions, method_names), start=2):
+        plt.subplot(1, 4, idx)
+        plt.title(method_name)
+        
+        # Ensure attribution is detached and converted to numpy
+        if isinstance(attribution, torch.Tensor):
+            attribution = attribution.detach().cpu().numpy()
+        
+        # Normalize attribution scores
+        attribution = np.abs(attribution)
+        attribution = (attribution - attribution.min()) / (attribution.max() - attribution.min() + 1e-8)
+        
+        plt.imshow(attribution.squeeze(), cmap='hot')
+        plt.axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+def explain_prediction(model, image, target_class, device):
+    """
+    Generate and visualize different explanations for a model's prediction
+    
+    Args:
+        model: The trained TissueCNN model
+        image: Input image tensor (1, 1, 64, 64)
+        target_class: The class to explain
+        device: The device to run computations on
+    """
+    model.eval()
+    image = image.to(device)
+    image.requires_grad = True  # Enable gradients for the input
+    
+    # Initialize attribution methods
+    saliency = Saliency(model)
+    guided_gradcam = GuidedGradCam(model, model.get_last_conv_layer())
+    ig = IntegratedGradients(model)
+    
+    # Generate attributions
+    saliency_attribution = saliency.attribute(image, target=target_class)
+    gradcam_attribution = guided_gradcam.attribute(image, target=target_class)
+    ig_attribution = ig.attribute(image, target=target_class, n_steps=50)
+    
+    # Collect all attributions and method names
+    attributions = [
+        saliency_attribution,
+        gradcam_attribution,
+        ig_attribution
+    ]
+    
+    method_names = [
+        'Saliency Map',
+        'Guided GradCAM',
+        'Integrated Gradients'
+    ]
+    
+    # Visualize all explanations
+    visualize_explanation(image, attributions, method_names)
+    
+    # Print model's confidence for this prediction
+    with torch.no_grad():
+        output = model(image)
+        probabilities = torch.nn.functional.softmax(output, dim=1)
+        confidence = probabilities[0][target_class].item()
+        print(f"Model's confidence for class {target_class}: {confidence:.2%}")
+
+def analyze_model_decisions(model, test_loader, device, num_samples=5):
+    """
+    Analyze model decisions on a few test samples
+    """
+    model.eval()
+    samples_analyzed = 0
+    
+    with torch.no_grad():
+        for images, labels in test_loader:
+            if samples_analyzed >= num_samples:
+                break
+                
+            image = images[0].unsqueeze(0)  # Take first image from batch
+            true_label = labels[0].item()
+            
+            # Get model's prediction
+            output = model(image.to(device))
+            predicted_class = output.argmax(dim=1).item()
+            
+            print(f"\nAnalyzing sample {samples_analyzed + 1}")
+            print(f"True label: {true_label}, Predicted label: {predicted_class}")
+            
+            # Generate explanations
+            explain_prediction(model, image, predicted_class, device)
+            samples_analyzed += 1
+
 def evaluate_model(model, test_loader):
     device = torch.device("cuda" if torch.cuda.is_available() else 
                          "mps" if torch.backends.mps.is_available() else 
@@ -350,11 +465,21 @@ def evaluate_model(model, test_loader):
     
     print(f'Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}%')
     print('-' * 60)
+    
+    # Add XAI analysis
+    print("\nGenerating explanations for model decisions...")
+    analyze_model_decisions(model, test_loader, device)
 
 if __name__ == "__main__":
     # Set random seed for reproducibility
     torch.manual_seed(42)
     np.random.seed(42)
+    
+    # Define device
+    device = torch.device("cuda" if torch.cuda.is_available() else 
+                         "mps" if torch.backends.mps.is_available() else 
+                         "cpu")
+    print(f"Using device: {device}")
     
     # Prepare data
     train_loader, val_loader, test_loader = prepare_data(batch_size=32)
@@ -366,5 +491,9 @@ if __name__ == "__main__":
     # Save the trained model's state dict
     torch.save(trained_model.state_dict(), 'tissue_classifier.pth')
     
-    # Evaluate model (no need to load state dict again since trained_model already has the best weights)
+    # Evaluate model
     evaluate_model(trained_model, test_loader)
+    
+    # After evaluation, analyze some test samples
+    print("\nAnalyzing model decisions...")
+    analyze_model_decisions(trained_model, test_loader, device)
